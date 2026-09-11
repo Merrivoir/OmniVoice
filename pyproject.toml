@@ -50,6 +50,12 @@ tn = [
     "num2words",           # integer-to-words fallback for other languages
 ]
 
+serve = [
+    "fastapi",
+    "uvicorn",
+    "python-multipart",    # multipart uploads for POST /v1/voices
+]
+
 eval = [
     "jiwer==3.1.0",       # WER
     "s3prl",               # Speech representation (HuBERT etc.)
@@ -68,6 +74,7 @@ omnivoice-infer = "omnivoice.cli.infer:main"
 omnivoice-infer-batch = "omnivoice.cli.infer_batch:main"
 omnivoice-demo = "omnivoice.cli.demo:main"
 omnivoice-merge-lora = "omnivoice.cli.merge_lora:main"
+omnivoice-serve = "omnivoice.cli.serve:main"
 
 [project.urls]
 Homepage = "https://github.com/k2-fsa/OmniVoice"

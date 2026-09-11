@@ -274,13 +274,14 @@ audio = model.generate(text="He plays the [B EY1 S] guitar while catching a [B A
 
 ## Command-Line Tools
 
-Three CLI entry points are provided. The CLI tools support all features available in the Python API (voice cloning, voice design, auto voice, generation parameters, etc.) — all controlled via command-line arguments.
+Four CLI entry points are provided. The CLI tools support all features available in the Python API (voice cloning, voice design, auto voice, generation parameters, etc.) — all controlled via command-line arguments.
 
 | Command | Description | Source |
 |---|---|---|
 | `omnivoice-demo` | Interactive Gradio web demo | [omnivoice/cli/demo.py](omnivoice/cli/demo.py) |
 | `omnivoice-infer` | Single-item inference | [omnivoice/cli/infer.py](omnivoice/cli/infer.py) |
 | `omnivoice-infer-batch` | Batch inference across multiple GPUs | [omnivoice/cli/infer_batch.py](omnivoice/cli/infer_batch.py) |
+| `omnivoice-serve` | HTTP API server for voice cloning & TTS | [omnivoice/cli/serve.py](omnivoice/cli/serve.py) |
 
 ### Demo
 
@@ -333,6 +334,33 @@ The test list is a JSONL file where each line is a JSON object:
 Only `id` and `text` are mandatory fields. `ref_audio` and `ref_text` are used in voice cloning mode. `instruct` is used in voice design mode. If no reference audio or instruct are provided, the model will generate text in a random voice.
 
 `language_id`, `duration`, and `speed` are optional. `duration` (in seconds) fixes the output length; `speed` controls the speaking rate. If `duration` and `speed` are both provided, `speed` will be ignored.
+
+### HTTP API (Serving)
+
+`omnivoice-serve` exposes a small HTTP API so other programs (AI agents, chat
+bots, notification pipelines) can synthesize speech in a pre-cloned voice.
+
+```bash
+pip install "omnivoice[serve]"          # fastapi + uvicorn + python-multipart
+omnivoice-serve --port 8000 --api-key secret
+```
+
+```bash
+# 1) clone a voice once (3-10 s reference clip)
+curl -X POST http://localhost:8000/v1/voices \
+  -F "audio=@reference.wav" -F "name=my-voice"
+
+# 2) synthesize — format=ogg returns OGG/Opus mono, ready for Telegram/WhatsApp
+curl -X POST http://localhost:8000/v1/tts \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello from OmniVoice.","voice_id":"my-voice-1a2b3c4d","format":"ogg"}' \
+  --output message.ogg
+```
+
+The model is loaded once, cloned voices persist on disk, and requests are
+serialized with a bounded queue. OpenAPI docs at `/docs`. See
+[docs/serving.md](docs/serving.md) for the full reference (endpoints, fields,
+agent example, hardware notes).
 
 ### FlashInfer Acceleration
 
