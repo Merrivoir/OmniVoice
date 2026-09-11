@@ -565,6 +565,21 @@ def build_app(model: OmniVoice, settings: Settings) -> FastAPI:
 # ---------------------------------------------------------------------------
 
 
+def _resolve_ffmpeg(explicit: Optional[str]) -> Optional[str]:
+    """Return a usable ffmpeg path, or ``None`` if unavailable.
+
+    An explicit ``--ffmpeg-path`` wins over the ``PATH`` lookup, and an
+    unusable explicit path is a hard error so that a typo does not silently
+    degrade OGG/MP3 output to HTTP 503.
+    """
+    if explicit:
+        exe = os.path.expanduser(os.path.expandvars(explicit))
+        if os.path.isfile(exe) and os.access(exe, os.X_OK):
+            return exe
+        raise SystemExit(f"--ffmpeg-path is not an executable file: {exe!r}")
+    return shutil.which("ffmpeg")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="omnivoice-serve",
@@ -597,6 +612,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-step", type=int, default=32)
     parser.add_argument("--guidance-scale", type=float, default=2.0)
     parser.add_argument("--opus-bitrate", default="32k")
+    parser.add_argument(
+        "--ffmpeg-path",
+        default=None,
+        help="Explicit path to the ffmpeg executable. Defaults to searching PATH.",
+    )
     parser.add_argument("--max-upload-mb", type=int, default=25)
     parser.add_argument(
         "--max-queue",
@@ -656,7 +676,7 @@ def main(argv=None) -> int:
         default_num_step=args.num_step,
         default_guidance_scale=args.guidance_scale,
         api_key=args.api_key or os.environ.get("OMNIVOICE_API_KEY"),
-        ffmpeg=shutil.which("ffmpeg"),
+        ffmpeg=_resolve_ffmpeg(args.ffmpeg_path),
         opus_bitrate=args.opus_bitrate,
         max_upload_mb=args.max_upload_mb,
         max_queue=args.max_queue,
@@ -665,7 +685,8 @@ def main(argv=None) -> int:
     if not settings.ffmpeg:
         logger.warning(
             "ffmpeg not found on PATH: format='ogg'/'mp3' will return HTTP 503. "
-            "Install ffmpeg for voice messages."
+            "Install ffmpeg (e.g. 'winget install Gyan.FFmpeg'), or pass "
+            "--ffmpeg-path /path/to/ffmpeg, for voice messages."
         )
     if args.host not in ("127.0.0.1", "localhost") and not settings.api_key:
         logger.warning(

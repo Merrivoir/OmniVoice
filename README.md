@@ -346,9 +346,19 @@ omnivoice-serve --port 8000 --api-key secret
 ```
 
 ```bash
+# 0) optional: clean up a reference clip (voice messages from Telegram/WhatsApp work as-is)
+#    --start/--end pick a window *before* silence removal, so the transcript stays in sync;
+#    --target-duration trims after silence removal and can clip the next sentence.
+python -m omnivoice.scripts.prepare_reference voice.ogg -o refs/my-voice.wav \
+  --target-duration 8 --text "Привет! Это пример моего голоса для клонирования."
+# for a long recording, select the window first and transcribe only that part:
+python -m omnivoice.scripts.prepare_reference voice.m4a -o refs/my-voice.wav \
+  --start 15.75 --end 24.55 --text "У нас играют и новички и опытные игроки."
+
 # 1) clone a voice once (3-10 s reference clip)
 curl -X POST http://localhost:8000/v1/voices \
-  -F "audio=@reference.wav" -F "name=my-voice"
+  -F "audio=@refs/my-voice.wav" -F "name=my-voice" \
+  -F "ref_text=Привет! Это пример моего голоса для клонирования."
 
 # 2) synthesize — format=ogg returns OGG/Opus mono, ready for Telegram/WhatsApp
 curl -X POST http://localhost:8000/v1/tts \
@@ -356,6 +366,10 @@ curl -X POST http://localhost:8000/v1/tts \
   -d '{"text":"Hello from OmniVoice.","voice_id":"my-voice-1a2b3c4d","format":"ogg"}' \
   --output message.ogg
 ```
+
+On Windows use `curl.exe`: in PowerShell `curl` is an alias for
+`Invoke-WebRequest` and will reject `-H`/`-d`/`--output`. See
+[docs/serving.md](docs/serving.md#windows--powershell).
 
 The model is loaded once, cloned voices persist on disk, and requests are
 serialized with a bounded queue. OpenAPI docs at `/docs`. See

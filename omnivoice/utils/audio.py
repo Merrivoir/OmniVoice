@@ -26,6 +26,10 @@ with shape ``(C, T)`` (channels-first).
 
 import io
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
 
 import numpy as np
 import soundfile as sf
@@ -37,6 +41,43 @@ from pydub.silence import detect_leading_silence, detect_nonsilent, split_on_sil
 logger = logging.getLogger(__name__)
 
 
+def _decode_with_ffmpeg(source, stdin_bytes: bytes = None):
+    """Decode *source* with ffmpeg into (C, T) float32 at its native rate.
+
+    Last-resort backend for containers libsndfile and librosa cannot read
+    (AAC/``.m4a`` voice memos, 3GP, video files, ...).
+
+    Args:
+        source: File path, or a label used in error messages.
+        stdin_bytes: Raw bytes to decode. They are written to a temporary
+            file rather than piped to ffmpeg, because MP4/MOV containers
+            (``.m4a``) need a seekable input.
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError(
+            f"Cannot read {source!r}: unsupported format and ffmpeg was not "
+            "found on PATH. Install ffmpeg or convert the file to WAV/FLAC."
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        if stdin_bytes is None:
+            in_path = os.fspath(source)
+        else:
+            in_path = os.path.join(tmp, "input")
+            with open(in_path, "wb") as f:
+                f.write(stdin_bytes)
+        out = os.path.join(tmp, "decoded.wav")
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+               "-i", in_path, out]
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            raise ValueError(f"ffmpeg could not decode {source!r}") from e
+        data, sr = sf.read(out, dtype="float32", always_2d=True)
+    return data.T, sr  # (T, C) → (C, T)
+
+
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
@@ -45,9 +86,10 @@ logger = logging.getLogger(__name__)
 def load_waveform(audio_path: str):
     """Load audio from a file path, returning (data, sample_rate).
 
-    Tries two backends in order:
-    1. soundfile — covers WAV/FLAC/OGG etc., no ffmpeg needed.
-    2. librosa — covers MP3/M4A etc. via audioread + ffmpeg.
+    Tries three backends in order:
+    1. soundfile — covers WAV/FLAC/OGG/MP3 etc., no ffmpeg needed.
+    2. librosa — covers whatever libsndfile does not (older librosa only).
+    3. ffmpeg — covers AAC/``.m4a`` voice memos, 3GP, video containers, etc.
 
     Returns:
         (data, sample_rate) where data is a numpy float32 array of
@@ -57,13 +99,18 @@ def load_waveform(audio_path: str):
         data, sr = sf.read(audio_path, dtype="float32", always_2d=True)
         return data.T, sr  # (T, C) → (C, T)
     except Exception:
-        # soundfile cannot handle MP3/M4A etc., fall back to librosa.
-        import librosa
+        # soundfile cannot handle some containers, fall back to librosa.
+        try:
+            import librosa
 
-        data, sr = librosa.load(audio_path, sr=None, mono=False)
-        if data.ndim == 1:
-            data = data[np.newaxis, :]
-        return data, sr
+            data, sr = librosa.load(audio_path, sr=None, mono=False)
+            if data.ndim == 1:
+                data = data[np.newaxis, :]
+            return data, sr
+        except Exception:
+            # librosa >= 1.0 dropped its audioread backend, so AAC/.m4a
+            # needs ffmpeg.
+            return _decode_with_ffmpeg(audio_path)
 
 
 def load_audio(audio_path: str, sampling_rate: int) -> np.ndarray:
@@ -104,12 +151,17 @@ def load_audio_bytes(raw: bytes, sampling_rate: int) -> np.ndarray:
         data, sr = sf.read(buf, dtype="float32", always_2d=True)
         data = data.T  # (T, C) → (C, T)
     except Exception:
-        import librosa
+        try:
+            import librosa
 
-        buf.seek(0)
-        data, sr = librosa.load(buf, sr=None, mono=False)
-        if data.ndim == 1:
-            data = data[np.newaxis, :]
+            buf.seek(0)
+            data, sr = librosa.load(buf, sr=None, mono=False)
+            if data.ndim == 1:
+                data = data[np.newaxis, :]
+        except Exception:
+            # librosa >= 1.0 dropped its audioread backend, so AAC/.m4a
+            # needs ffmpeg.
+            data, sr = _decode_with_ffmpeg("<bytes>", stdin_bytes=raw)
 
     if data.shape[0] > 1:
         data = np.mean(data, axis=0, keepdims=True)
