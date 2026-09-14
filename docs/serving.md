@@ -146,20 +146,34 @@ In PowerShell `curl` is an alias for `Invoke-WebRequest`, which does not accept
 the `-H`/`-d`/`--output` syntax above. Use `curl.exe` explicitly (it ships with
 Windows 10+) or the native cmdlet:
 
+**Do not inline the JSON body.** PowerShell 5.1 rewrites native-command arguments:
+plain `"` inside single quotes is stripped (→ HTTP 422), while escaping to `\"`
+confuses the argument splitter, so a body containing spaces is cut apart and curl
+tries to resolve fragments like `Пора` as hostnames (`URL rejected: Bad hostname`).
+Use the cmdlet, or pass the body from a file:
+
 ```powershell
-curl.exe -X POST http://localhost:8000/v1/tts `
-  -H "Content-Type: application/json" `
-  -d '{"text":"Привет! Это тестовое голосовое сообщение.","voice_id":"ru-narrator-1a2b3c4d","format":"ogg"}' `
-  --output message.ogg
+# simplest — no quoting at all
+Invoke-RestMethod -Uri http://localhost:8000/v1/tts -Method Post `
+  -ContentType 'application/json' `
+  -Body '{"text":"Пора спать! Завтра на тренировку","voice_id":"ru-narrator-1a2b3c4d","format":"ogg"}' `
+  -OutFile message.ogg
 ```
 
 ```powershell
-# native alternative — no quoting pain, write bytes directly
-Invoke-RestMethod -Uri http://localhost:8000/v1/tts -Method Post `
-  -ContentType 'application/json' `
-  -Body '{"text":"Привет!","voice_id":"ru-narrator-1a2b3c4d","format":"ogg"}' `
-  -OutFile message.ogg
+# curl.exe with the body read from a file (UTF-8, no BOM)
+$body = '{"text":"Пора спать! Завтра на тренировку","voice_id":"ru-narrator-1a2b3c4d","format":"ogg"}'
+[IO.File]::WriteAllText("$env:TEMP\tts.json", $body, [Text.UTF8Encoding]::new($false))
+curl.exe -X POST http://localhost:8000/v1/tts `
+  -H "X-API-Key: <key>" `
+  -H "Content-Type: application/json" `
+  -d "@$env:TEMP\tts.json" `
+  --output message.ogg
 ```
+
+`Invoke-RestMethod` handles UTF-8 bodies and non-ASCII `OutputFile` paths correctly;
+prefer it. If you must use `curl.exe`, the `-d "@file"` form is the only reliable one
+on PowerShell 5.1.
 
 If the server was started in a terminal whose `PATH` predates the ffmpeg install,
 `/health` reports `"ffmpeg": false`. Restart it from a fresh shell (or pass
@@ -185,7 +199,7 @@ Other endpoints:
 | `language` | auto | name (`"Russian"`) or code (`"ru"`); improves quality |
 | `speed` | model default | `>1` faster, `<1` slower |
 | `duration` | — | fixed seconds; overrides `speed` |
-| `num_step` | `32` | lower = faster |
+| `num_step` | server default | iterative unmasking steps; **the effective default is the server's `--num-step`**, which may be lower than the model's 32 |
 | `guidance_scale` | `2.0` | CFG scale |
 | `denoise` | `true` | |
 | `normalize_text` | `false` | expands numbers/dates/currency |
@@ -194,6 +208,43 @@ Other endpoints:
 
 Binary responses carry `X-Sample-Rate`, `X-Duration-Seconds`, `X-Audio-Format`
 and `X-Voice-Id` headers.
+
+## Getting the clone to sound like the speaker
+
+If the output does not resemble the reference, check these roughly in order —
+the first two account for most "it sounds nothing like her" reports, and both
+are *server-side* settings rather than anything wrong with the reference.
+
+1. **`num_step`.** This is the model's quality dial and the most common cause.
+   The model default is 32, but the *effective* default is whatever `--num-step`
+   the server was started with. If you followed the low-spec advice below and
+   started with `--num-step 8`, every request silently runs at a quarter of the
+   normal quality unless it overrides `num_step` in the JSON body. Measured on
+   the same text and voice: 8 steps → 75% of frames carry speech, 32 steps →
+   85%. Prefer starting the server at the default 32 and lowering `num_step`
+   **per request** only where latency matters.
+2. **`format`.** `ogg`/`mp3` are lossy *and* downsampled to 48 kHz re-encoded
+   Opus at `--opus-bitrate` (32k by default, with `-application voip`, which
+   optimises for telephone intelligibility rather than timbre). To judge
+   similarity, always compare in `format=wav` — the server writes PCM without
+   ffmpeg and without loss. Raise `--opus-bitrate` to `64k`/`96k` for delivery.
+3. **`language`.** Leave it out and the language is auto-detected; passing
+   `"Russian"` explicitly improves quality. Not passing it is a needless risk.
+4. **`voice_id`.** Omitting it uses the built-in auto voice — there is nothing
+   to sound similar *to*. A clone must be created first via `POST /v1/voices`.
+5. **`instruct`.** When it agrees with the reference, it improves cloning
+   stability for the attributes it names (see `docs/tips.md`). When it
+   conflicts, the reference wins.
+6. **The reference's delivery.** Cloning copies emotion, pace and register, not
+   just timbre. A bouncy sales-pitch clip produces a bouncy clone; a snippet
+   with a flat "presenter" tone produces a flat clone. Pick a window whose
+   delivery matches how you want the output to sound, and prefer a neutral
+   clip over a theatrical one.
+
+Hardware does **not** affect similarity directly: with identical decoding
+parameters the output is the same on a laptop or an H100. What a GPU buys is the
+ability to *afford* the settings that do matter — full `num_step`, larger
+references, and many candidates to A/B. See FlashInfer in the README.
 
 ## Example: AI agent (Python)
 
@@ -248,8 +299,10 @@ from the file, so just upload the bytes returned with `format=ogg`.
 Squeezing it onto a weak machine:
 
 - `--num-step 8` (instead of the default 32) cuts the denoising loop ~4x and
-  is the single biggest speed-up. Quality drops slightly; raise it until the
-  output is good enough.
+  is the single biggest speed-up. It is also the biggest hit to similarity —
+  see [Getting the clone to sound like the speaker](#getting-the-clone-to-sound-like-the-speaker).
+  Prefer keeping the server at 32 and passing a lower `num_step` per request
+  for the messages where latency matters.
 - `--no-asr` skips loading Whisper. Always do this on a low-RAM box — and then
   `ref_text` becomes **required** when cloning; auto-transcription is off.
 - `--dtype bfloat16` roughly halves the memory the weights occupy, but on CPUs

@@ -368,8 +368,17 @@ curl -X POST http://localhost:8000/v1/tts \
 ```
 
 On Windows use `curl.exe`: in PowerShell `curl` is an alias for
-`Invoke-WebRequest` and will reject `-H`/`-d`/`--output`. See
-[docs/serving.md](docs/serving.md#windows--powershell).
+`Invoke-WebRequest` and will reject `-H`/`-d`/`--output`. Inlining the JSON body
+also fails (PowerShell mangles the quotes) — prefer the cmdlet:
+
+```powershell
+Invoke-RestMethod -Uri http://localhost:8000/v1/tts -Method Post `
+  -ContentType 'application/json' `
+  -Body '{"text":"Hello from OmniVoice.","voice_id":"my-voice-1a2b3c4d","format":"ogg"}' `
+  -OutFile message.ogg
+```
+
+See [docs/serving.md](docs/serving.md#windows--powershell).
 
 The model is loaded once, cloned voices persist on disk, and requests are
 serialized with a bounded queue. OpenAPI docs at `/docs`. See
